@@ -56,7 +56,7 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .disabled(state.status == .recording || isTranscribingFile)
+                .disabled(isSessionActive || isTranscribingFile)
 
                 Picker("Tier", selection: Binding(
                     get: { tier },
@@ -67,7 +67,7 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .disabled(state.status == .recording || isTranscribingFile)
+                .disabled(isSessionActive || isTranscribingFile)
             }
 
             HStack(spacing: 12) {
@@ -81,7 +81,7 @@ struct ContentView: View {
                 .disabled(!canStart)
 
                 Button {
-                    controller?.stop()
+                    Task { await controller?.stop() }
                 } label: {
                     Label("Stop", systemImage: "stop.fill")
                         .frame(maxWidth: .infinity)
@@ -96,7 +96,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(state.status == .recording || isTranscribingFile)
+                .disabled(isSessionActive || isTranscribingFile)
             }
 
             HStack(spacing: 12) {
@@ -107,7 +107,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(state.status == .recording || isTranscribingFile)
+                .disabled(isSessionActive || isTranscribingFile)
 
                 if isTranscribingFile {
                     Button(role: .cancel) {
@@ -137,6 +137,11 @@ struct ContentView: View {
     private var isTranscribingFile: Bool {
         if case .transcribingFile = state.status { return true }
         return false
+    }
+
+    /// Recording or loading the model — both lock language/tier/clear/import.
+    private var isSessionActive: Bool {
+        state.status == .recording || state.status == .loadingModels
     }
 
     private var canStart: Bool {

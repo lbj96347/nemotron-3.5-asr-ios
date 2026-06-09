@@ -147,7 +147,7 @@ final class NemotronASRService {
                 segSamples.append(contentsOf: repeatElement(0, count: paddedLen - realLen))
             }
 
-            let (segMel, segMelFrames) = try runPreprocessor(runner: runner, samples: segSamples, features: features)
+            let (segMel, segMelFrames) = try Self.runPreprocessor(runner: runner, samples: segSamples, features: features)
             let realCols = chunksInSeg * chunkFrames               // frames we consume
             guard segMelFrames >= realCols else {
                 throw ServiceError.empty("segment mel \(segMelFrames) < expected \(realCols)")
@@ -208,8 +208,9 @@ final class NemotronASRService {
     // MARK: - Helpers
 
     /// Run the preprocessor on the full sample buffer → mel `[features, frames]`
-    /// row-major flat + frame count.
-    private func runPreprocessor(runner: CoreMLModelRunner, samples: [Float], features: Int) throws -> ([Float], Int) {
+    /// row-major flat + frame count. Shared by the offline service and the live
+    /// `StreamingTranscriber` so both feed the encoder identical features.
+    static func runPreprocessor(runner: CoreMLModelRunner, samples: [Float], features: Int) throws -> ([Float], Int) {
         let audio = try CoreMLModelRunner.floatArray(samples, shape: [1, samples.count])
         let audioLen = try CoreMLModelRunner.int32Array([Int32(samples.count)], shape: [1])
         let out = try runner.predict(module: "preprocessor", inputs: [
