@@ -1,0 +1,34 @@
+# Xcode / build
+*.xcodeproj
+DerivedData/
+build/
+*.xcworkspace
+xcuserdata/
+*.xcuserstate
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Scratch dir used by scripts to fetch signature files for inspection
+.inspect/
+
+# Large / license-bound model artifacts (download via scripts/download_models.sh)
+Models/**
+!Models/.gitkeep
+
+# User-provided test audio
+TestAudio/
+
+# Generated transcripts (output artifacts from FullClipTranscriptionTests)
+TranscriptOutput/
+
+# Test audio (provide your own)
+Samples/**/*.wav
+Samples/**/*.m4a
+Samples/**/*.flac
+
+# Python
+__pycache__/
+*.pyc
+.venv/

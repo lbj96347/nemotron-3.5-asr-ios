@@ -1,0 +1,10 @@
+# Model files live here. Download with:
+#   ./scripts/download_models.sh multilingual 2240
+# Expected after download:
+#   Models/multilingual/2240ms/preprocessor.mlmodelc
+#   Models/multilingual/2240ms/encoder.mlmodelc
+#   Models/multilingual/2240ms/decoder_joint.mlmodelc   (B1 fused; default path)
+#   Models/multilingual/2240ms/decoder.mlmodelc
+#   Models/multilingual/2240ms/joint.mlmodelc
+#   Models/multilingual/2240ms/tokenizer.json
+#   Models/multilingual/2240ms/metadata.json
