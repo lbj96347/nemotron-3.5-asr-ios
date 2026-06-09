@@ -163,6 +163,12 @@ records per-chunk timing and shows a placeholder partial.
 - ANE behavior and the memory ceiling can only be validated on device (the Simulator
   runs CoreML on CPU/GPU — correctness-faithful but not representative of ANE perf).
 
+## License
+
+Source code is released under the [MIT License](LICENSE). This covers the app code only —
+the NVIDIA Nemotron-3.5-ASR model weights are **not** included and remain subject to their
+own license on [Hugging Face](https://huggingface.co/FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML).
+
 ## Built with
 
 Development of this PoC was assisted by these tools:
