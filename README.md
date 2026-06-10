@@ -3,6 +3,10 @@
 On-device, offline, streaming speech recognition PoC using NVIDIA
 **Nemotron-3.5-ASR Streaming 0.6B** (multilingual) via CoreML on iPhone/iPad.
 
+**Both inference paths now run end-to-end on a physical device:** live mic streaming
+(Phase 7) and offline file transcription. The simulator still runs the full shell
+(audio + benchmark) on CPU/GPU but is not representative of ANE performance.
+
 See [`IMPLEMENTATION-PLAN.md`](IMPLEMENTATION-PLAN.md) for the full engineering plan
 and [`proposed-plan.md`](proposed-plan.md) for the original product intent.
 
@@ -100,10 +104,17 @@ consumed at runtime so no tensor names / prompt IDs are hardcoded. Highlights:
 | 4 | Model download + CoreML signature inspection (`scripts/`, `ModelSignatures.json`) | ✅ Done |
 | 5 | CoreML loading + adaptive runner (`CoreMLModelRunner`, compute-unit fallback) | ✅ Done |
 | 6 | RNN-T greedy decoder + tokenizer + file transcription (`NemotronASRService`) | ✅ Done |
-| 7 | Live mic streaming integration | ⬜ Next |
-| 8 | Accuracy test set + Whisper baseline + benchmark results | ⬜ |
+| 7 | Live mic streaming integration (`StreamingTranscriber`) — verified on device | ✅ Done |
+| 8 | Accuracy test set + Whisper baseline + benchmark results | ⬜ Next |
 
-End-to-end file transcription works: `EndToEndTranscriptionTests.testTranscribeMeetingClip`
+**Live mic streaming** (`StreamingTranscriber`) now transcribes in real time on a
+physical device: mic chunks are queued FIFO and drained by a single in-order consumer
+(`RecordingController.consume`), threading the encoder caches + RNN-T predictor state
+across chunks. **Imported file transcription** (Files importer → `transcribeImportedFile`)
+runs the same offline pipeline on a picked clip. Both were debugged and confirmed
+working on real hardware in commit `6874345`.
+
+End-to-end file transcription also runs as a test: `EndToEndTranscriptionTests.testTranscribeMeetingClip`
 transcribes the first 60 s of the meeting clip on the iOS Simulator (CPU/GPU) at
 **RTF ≈ 0.14**. Run it with:
 
@@ -124,9 +135,13 @@ AVAudioEngine ─▶ AudioResampler (16 kHz mono) ─▶ AudioChunkBuffer (tier-
                    SwiftUI: ContentView / TranscriptView / BenchmarkPanelView
 ```
 
-`RecordingController.process(chunk:)` is the seam where Phases 5–7 plug in real
-inference (preprocessor → encoder(cache) → RNN-T decode → tokenizer). Today it
-records per-chunk timing and shows a placeholder partial.
+`RecordingController` drives both inference paths. For live mic streaming, the audio
+queue yields chunks into an `AsyncStream` and a single `consume(chunk:)` consumer drains
+them strictly in order into `StreamingTranscriber.ingest`, which runs the full inference
+(preprocessor → encoder(cache) → RNN-T decode → tokenizer) off the main actor and threads
+encoder caches + predictor state across chunks. When the model bundle is absent it falls
+back to recording per-chunk timing only (graceful degradation). A re-entrancy guard on
+`start()` prevents a double tap from loading a second ~634 MB model.
 
 ## Inference recipe (Phases 5–6, implemented)
 
@@ -154,8 +169,6 @@ records per-chunk timing and shows a placeholder partial.
 - The CoreML log line `[espresso] … ios17.slice_by_index: zero shape error` during
   encoder load is **benign** flexible-shape type-inference noise — the module loads
   and produces correct `[1,1024,28]` output.
-- Live mic path (`RecordingController.process(chunk:)`) still shows a placeholder —
-  Phase 7 wires the same encoder/decoder/tokenizer onto the streaming chunks.
 - Transcript **accuracy** isn't measured yet (no WER/CER scorer or Whisper baseline);
   that's Phase 8. The 60 s smoke test only asserts a sane, non-degenerate transcript.
 - Cantonese (`yue-Hant-HK`) coverage depends on the multilingual vocab; keep Whisper
