@@ -13,8 +13,8 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     statusBanner
                     controls
-                    BenchmarkPanelView(snapshot: state.benchmark)
                     TranscriptView(partial: state.partialTranscript, final: state.finalTranscript)
+                    BenchmarkPanelView(snapshot: state.benchmark)
                 }
                 .padding()
             }

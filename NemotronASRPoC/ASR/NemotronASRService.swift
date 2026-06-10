@@ -211,19 +211,24 @@ final class NemotronASRService {
     /// row-major flat + frame count. Shared by the offline service and the live
     /// `StreamingTranscriber` so both feed the encoder identical features.
     static func runPreprocessor(runner: CoreMLModelRunner, samples: [Float], features: Int) throws -> ([Float], Int) {
-        let audio = try CoreMLModelRunner.floatArray(samples, shape: [1, samples.count])
-        let audioLen = try CoreMLModelRunner.int32Array([Int32(samples.count)], shape: [1])
-        let out = try runner.predict(module: "preprocessor", inputs: [
-            "audio": MLFeatureValue(multiArray: audio),
-            "audio_length": MLFeatureValue(multiArray: audioLen),
-        ])
-        guard let mel = out.featureValue(for: "mel")?.multiArrayValue else {
-            throw CoreMLModelRunner.RunnerError.missingOutput(module: "preprocessor", name: "mel")
+        // Autorelease pool: the mel MLMultiArray is large and this is called once
+        // per segment/chunk inside a loop; copy it to a [Float] and let the backing
+        // buffer drain so RAM doesn't accumulate across calls.
+        try autoreleasepool {
+            let audio = try CoreMLModelRunner.floatArray(samples, shape: [1, samples.count])
+            let audioLen = try CoreMLModelRunner.int32Array([Int32(samples.count)], shape: [1])
+            let out = try runner.predict(module: "preprocessor", inputs: [
+                "audio": MLFeatureValue(multiArray: audio),
+                "audio_length": MLFeatureValue(multiArray: audioLen),
+            ])
+            guard let mel = out.featureValue(for: "mel")?.multiArrayValue else {
+                throw CoreMLModelRunner.RunnerError.missingOutput(module: "preprocessor", name: "mel")
+            }
+            let shape = mel.shape.map { $0.intValue }   // [1, features, frames]
+            let frames = shape.count == 3 ? shape[2] : 0
+            let flat = CoreMLModelRunner.toFloats(mel)
+            return (flat, frames)
         }
-        let shape = mel.shape.map { $0.intValue }   // [1, features, frames]
-        let frames = shape.count == 3 ? shape[2] : 0
-        let flat = CoreMLModelRunner.toFloats(mel)
-        return (flat, frames)
     }
 
     /// Build one `[features, windowFrames]` row-major encoder window from the

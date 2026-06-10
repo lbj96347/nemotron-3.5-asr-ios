@@ -20,6 +20,10 @@ final class NemotronEncoderRunner {
     private let cacheChannelShape: [Int]
     private let cacheTimeShape: [Int]
 
+    /// Log the encoder output's shape/strides/dtype once per session to confirm the
+    /// on-device (ANE) memory layout the stride-safe reads must handle.
+    private var loggedLayout = false
+
     init(runner: CoreMLModelRunner) throws {
         self.runner = runner
         self.sig = runner.signatures
@@ -45,47 +49,73 @@ final class NemotronEncoderRunner {
     /// (< 233 only on a zero-padded final window) and is passed as `mel_length`.
     /// Threads caches forward and honours `encoded_length` on padded final chunks.
     func encode(melTotalFrames: [Float], totalFrames: Int, validFrames: Int, promptID: Int) throws -> [[Float]] {
-        let features = sig.metadata?.mel_features ?? 128
-        let melArray = try CoreMLModelRunner.floatArray(
-            melTotalFrames, shape: [1, features, totalFrames])
-        let melLen = try CoreMLModelRunner.int32Array([Int32(validFrames)], shape: [1])
-        let promptArray = try CoreMLModelRunner.int32Array([Int32(promptID)], shape: [1])
+        let cacheLenIn = CoreMLModelRunner.firstInt(cacheLen)
+        // Wrap the prediction + frame extraction in an autorelease pool so the
+        // encoder's MLMultiArray outputs don't accumulate across chunks (jetsam
+        // guard). The threaded caches are reassigned to instance vars (strong refs)
+        // and `frames` is a copied [[Float]], so all survive the drain.
+        return try autoreleasepool {
+            let features = sig.metadata?.mel_features ?? 128
+            let melArray = try CoreMLModelRunner.floatArray(
+                melTotalFrames, shape: [1, features, totalFrames])
+            let melLen = try CoreMLModelRunner.int32Array([Int32(validFrames)], shape: [1])
+            let promptArray = try CoreMLModelRunner.int32Array([Int32(promptID)], shape: [1])
 
-        let inputs: [String: MLFeatureValue] = [
-            "mel": MLFeatureValue(multiArray: melArray),
-            "mel_length": MLFeatureValue(multiArray: melLen),
-            "cache_channel": MLFeatureValue(multiArray: cacheChannel),
-            "cache_time": MLFeatureValue(multiArray: cacheTime),
-            "cache_len": MLFeatureValue(multiArray: cacheLen),
-            "prompt_id": MLFeatureValue(multiArray: promptArray),
-        ]
+            let inputs: [String: MLFeatureValue] = [
+                "mel": MLFeatureValue(multiArray: melArray),
+                "mel_length": MLFeatureValue(multiArray: melLen),
+                "cache_channel": MLFeatureValue(multiArray: cacheChannel),
+                "cache_time": MLFeatureValue(multiArray: cacheTime),
+                "cache_len": MLFeatureValue(multiArray: cacheLen),
+                "prompt_id": MLFeatureValue(multiArray: promptArray),
+            ]
 
-        let out = try runner.predict(module: "encoder", inputs: inputs)
+            let out = try runner.predict(module: "encoder", inputs: inputs)
 
-        // Thread caches forward.
-        if let cc = out.featureValue(for: "cache_channel_out")?.multiArrayValue { cacheChannel = cc }
-        if let ct = out.featureValue(for: "cache_time_out")?.multiArrayValue { cacheTime = ct }
-        if let cl = out.featureValue(for: "cache_len_out")?.multiArrayValue { cacheLen = cl }
+            // Thread caches forward.
+            if let cc = out.featureValue(for: "cache_channel_out")?.multiArrayValue { cacheChannel = cc }
+            if let ct = out.featureValue(for: "cache_time_out")?.multiArrayValue { cacheTime = ct }
+            if let cl = out.featureValue(for: "cache_len_out")?.multiArrayValue { cacheLen = cl }
 
-        guard let encoded = out.featureValue(for: "encoded")?.multiArrayValue else {
-            throw CoreMLModelRunner.RunnerError.missingOutput(module: "encoder", name: "encoded")
+            guard let encoded = out.featureValue(for: "encoded")?.multiArrayValue else {
+                throw CoreMLModelRunner.RunnerError.missingOutput(module: "encoder", name: "encoded")
+            }
+            let shape = encoded.shape.map { $0.intValue }   // [1, 1024, 28]
+            let frameCount = shape.count == 3 ? shape[2] : 0
+
+            // encoded_length tells us how many frames are valid (final padded chunk
+            // may produce fewer than `frameCount`).
+            var outFrames = frameCount
+            var encLenValue = -1
+            if let encLen = out.featureValue(for: "encoded_length")?.multiArrayValue {
+                encLenValue = CoreMLModelRunner.firstInt(encLen)
+                if encLenValue > 0 { outFrames = min(frameCount, encLenValue) }
+            }
+
+            let cacheLenOut = CoreMLModelRunner.firstInt(cacheLen)
+            Log.stream.debug(
+                "encode: mel valid=\(validFrames)/\(totalFrames), cache_len \(cacheLenIn)→\(cacheLenOut), encoded=\(shape.description, privacy: .public), encoded_length=\(encLenValue) → \(outFrames) frames")
+
+            if !loggedLayout {
+                loggedLayout = true
+                let strides = encoded.strides.map { $0.intValue }
+                let contig = CoreMLModelRunner.isContiguous(shape: shape, strides: strides)
+                Log.stream.info(
+                    "ENCODER OUTPUT LAYOUT: shape=\(shape.description, privacy: .public), strides=\(strides.description, privacy: .public), dtype=\(encoded.dataType.rawValue), contiguous=\(contig)")
+            }
+
+            // Read the whole encoded tensor once, stride/dtype-safe, then slice frames
+            // from the contiguous [1, dim, frameCount] row-major buffer.
+            let flat = CoreMLModelRunner.contiguousFloats(encoded)
+            let dim = shape.count == 3 ? shape[1] : (features == 0 ? 0 : flat.count / max(1, frameCount))
+            var frames: [[Float]] = []
+            frames.reserveCapacity(outFrames)
+            for t in 0..<outFrames {
+                var v = [Float](repeating: 0, count: dim)
+                for d in 0..<dim { v[d] = flat[d * frameCount + t] }
+                frames.append(v)
+            }
+            return frames
         }
-        let shape = encoded.shape.map { $0.intValue }   // [1, 1024, 28]
-        let frameCount = shape.count == 3 ? shape[2] : 0
-
-        // encoded_length tells us how many frames are valid (final padded chunk
-        // may produce fewer than `frameCount`).
-        var validFrames = frameCount
-        if let encLen = out.featureValue(for: "encoded_length")?.multiArrayValue {
-            let v = CoreMLModelRunner.firstInt(encLen)
-            if v > 0 { validFrames = min(frameCount, v) }
-        }
-
-        var frames: [[Float]] = []
-        frames.reserveCapacity(validFrames)
-        for t in 0..<validFrames {
-            frames.append(try CoreMLModelRunner.encoderFrame(from: encoded, frame: t))
-        }
-        return frames
     }
 }

@@ -25,6 +25,12 @@ final class RecordingController {
     private var streamTask: Task<Void, Never>?
     private var chunkContinuation: AsyncStream<[Float]>.Continuation?
 
+    /// Re-entrancy guard for `start()`. The Start button is disabled during a
+    /// session, but the `await requestPermission()` gap leaves a brief window where
+    /// a double tap can kick off a SECOND `StreamingTranscriber.make()` — loading a
+    /// second ~634 MB model and leaking the first. Set synchronously on entry.
+    private var isStarting = false
+
     /// Bundled CoreML signatures (Phase 4 output) + resolved language→prompt_id map.
     /// Loaded independently of the weights so the prompt map is available even
     /// before the ~634 MB model download is bundled.
@@ -77,6 +83,14 @@ final class RecordingController {
     }
 
     func start() async {
+        guard !isStarting else {
+            Log.stream.warning("start() re-entry ignored — a session is already starting")
+            return
+        }
+        isStarting = true
+        defer { isStarting = false }
+        Log.stream.info("start(): language=\(self.state.selectedLanguage.rawValue, privacy: .public), tier=\(self.tier.displayName, privacy: .public)")
+
         state.status = .requestingPermission
         let granted = await AudioRecorder.requestPermission()
         guard granted else {
@@ -271,7 +285,10 @@ final class RecordingController {
             benchmark.markFirstPartial(at: CACurrentMediaTime())
             state.partialTranscript = text
             updateSnapshot()
+            let footprint = MemoryMonitor.physicalFootprintMB() ?? 0
+            Log.stream.info("chunk #\(self.chunkCount) ingested in \(Int(seconds * 1000)) ms, samples=\(chunk.count), text.count=\(text.count), footprint=\(Int(footprint)) MB")
         } catch {
+            Log.stream.error("chunk ingest FAILED: \(String(describing: error), privacy: .public)")
             state.status = .error(String(describing: error))
         }
     }

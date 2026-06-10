@@ -5,21 +5,36 @@ struct TranscriptView: View {
     let partial: String
     let final: String
 
+    private var isEmpty: Bool { partial.isEmpty && final.isEmpty }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            section(title: "Partial", text: partial.isEmpty ? "—" : partial,
-                    color: .secondary, mono: true)
+            Text("TRANSCRIPT")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
 
-            Divider()
+            if isEmpty {
+                Text("Transcript will appear here…")
+                    .font(.body)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+            } else {
+                section(title: "Partial", text: partial.isEmpty ? "—" : partial,
+                        color: .secondary, mono: true, maxHeight: 120)
 
-            section(title: "Final", text: final.isEmpty ? "—" : final,
-                    color: .primary, mono: false)
+                Divider()
+
+                section(title: "Final", text: final.isEmpty ? "—" : final,
+                        color: .primary, mono: false, maxHeight: 200)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
     @ViewBuilder
-    private func section(title: String, text: String, color: Color, mono: Bool) -> some View {
+    private func section(title: String, text: String, color: Color, mono: Bool, maxHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title.uppercased())
                 .font(.caption2.weight(.semibold))
@@ -31,7 +46,7 @@ struct TranscriptView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
-            .frame(maxHeight: 140)
+            .frame(maxHeight: maxHeight)
         }
     }
 }

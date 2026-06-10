@@ -138,6 +138,14 @@ actor StreamingTranscriber {
         // 5. Greedy RNN-T decode, continuing the persistent predictor state.
         let tokens = try decoder.decode(encoderFrames: frames)
         allTokens.append(contentsOf: tokens)
+
+        // Diagnostics: the smoking gun for a blank transcript is encoder frames > 0
+        // but zero tokens emitted (decoder produced only blank id) chunk after chunk.
+        if !frames.isEmpty && tokens.isEmpty {
+            Log.stream.warning("ingest: ALL-BLANK decode — \(frames.count) encoder frames, 0 tokens (promptID=\(self.promptID))")
+        } else {
+            Log.stream.debug("ingest: melFrames=\(melFrames), encoderFrames=\(frames.count), tokens=\(tokens.count) (cumulative \(self.allTokens.count))")
+        }
         return tokenizer.decode(allTokens)
     }
 

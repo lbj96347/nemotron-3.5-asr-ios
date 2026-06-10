@@ -24,6 +24,10 @@ final class RNNTDecoder {
     private var h: MLMultiArray
     private var c: MLMultiArray
 
+    /// Log the logits output's shape/strides/dtype once per session to confirm the
+    /// on-device (ANE) memory layout the stride-safe argmax must handle.
+    private var loggedLayout = false
+
     init(runner: CoreMLModelRunner, maxSymbolsPerFrame: Int = 10) throws {
         self.runner = runner
         let blank = runner.signatures.blankTokenID ?? 13087
@@ -116,38 +120,54 @@ final class RNNTDecoder {
     }
 
     private func runStep(encoderFrame: [Float], token: Int, h: MLMultiArray, c: MLMultiArray) throws -> Step {
-        let encDim = runner.signatures.metadata?.encoder_dim ?? 1024
-        let encoderArray = try CoreMLModelRunner.floatArray(encoderFrame, shape: [1, encDim, 1])
-        let tokenArray = try CoreMLModelRunner.int32Array([Int32(token)], shape: [1, 1])
-        let tokenLen = try CoreMLModelRunner.int32Array([1], shape: [1])
+        // Wrap each prediction in an autorelease pool: this runs hundreds of times
+        // per file inside a synchronous loop, and CoreML's MLMultiArray outputs are
+        // backed by autoreleased buffers that otherwise accumulate until the loop
+        // exits → unbounded RAM growth → jetsam. The returned `Step` keeps strong
+        // refs to h_out/c_out (and `best` is a copied Int), so they survive the drain.
+        try autoreleasepool {
+            let encDim = runner.signatures.metadata?.encoder_dim ?? 1024
+            let encoderArray = try CoreMLModelRunner.floatArray(encoderFrame, shape: [1, encDim, 1])
+            let tokenArray = try CoreMLModelRunner.int32Array([Int32(token)], shape: [1, 1])
+            let tokenLen = try CoreMLModelRunner.int32Array([1], shape: [1])
 
-        let inputs: [String: MLFeatureValue] = [
-            "encoder": MLFeatureValue(multiArray: encoderArray),
-            "token": MLFeatureValue(multiArray: tokenArray),
-            "token_length": MLFeatureValue(multiArray: tokenLen),
-            "h_in": MLFeatureValue(multiArray: h),
-            "c_in": MLFeatureValue(multiArray: c),
-        ]
-        let out = try runner.predict(module: "decoder_joint", inputs: inputs)
+            let inputs: [String: MLFeatureValue] = [
+                "encoder": MLFeatureValue(multiArray: encoderArray),
+                "token": MLFeatureValue(multiArray: tokenArray),
+                "token_length": MLFeatureValue(multiArray: tokenLen),
+                "h_in": MLFeatureValue(multiArray: h),
+                "c_in": MLFeatureValue(multiArray: c),
+            ]
+            let out = try runner.predict(module: "decoder_joint", inputs: inputs)
 
-        guard let logits = out.featureValue(for: "logits")?.multiArrayValue else {
-            throw CoreMLModelRunner.RunnerError.missingOutput(module: "decoder_joint", name: "logits")
+            guard let logits = out.featureValue(for: "logits")?.multiArrayValue else {
+                throw CoreMLModelRunner.RunnerError.missingOutput(module: "decoder_joint", name: "logits")
+            }
+            if !loggedLayout {
+                loggedLayout = true
+                let shape = logits.shape.map { $0.intValue }
+                let strides = logits.strides.map { $0.intValue }
+                let contig = CoreMLModelRunner.isContiguous(shape: shape, strides: strides)
+                Log.stream.info(
+                    "LOGITS LAYOUT: shape=\(shape.description, privacy: .public), strides=\(strides.description, privacy: .public), dtype=\(logits.dataType.rawValue), contiguous=\(contig)")
+            }
+            let best = Self.argmax(logits)
+            let hOut = out.featureValue(for: "h_out")?.multiArrayValue ?? h
+            let cOut = out.featureValue(for: "c_out")?.multiArrayValue ?? c
+            return Step(token: best, h: hOut, c: cOut)
         }
-        let best = Self.argmax(logits)
-        let hOut = out.featureValue(for: "h_out")?.multiArrayValue ?? h
-        let cOut = out.featureValue(for: "c_out")?.multiArrayValue ?? c
-        return Step(token: best, h: hOut, c: cOut)
     }
 
-    /// Argmax over a flat `logits[1,1,1,V]` array.
+    /// Argmax over `logits[1,1,1,V]`. Reads via `contiguousFloats` so non-contiguous
+    /// or float16 ANE outputs are repacked correctly before the argmax — the old
+    /// raw-pointer read scrambled logits on device and made blank win every frame.
     static func argmax(_ logits: MLMultiArray) -> Int {
-        let count = logits.count
-        guard count > 0 else { return 0 }
-        let ptr = logits.dataPointer.bindMemory(to: Float.self, capacity: count)
+        let flat = CoreMLModelRunner.contiguousFloats(logits)
+        guard !flat.isEmpty else { return 0 }
         var bestIdx = 0
-        var bestVal = ptr[0]
-        for i in 1..<count {
-            if ptr[i] > bestVal { bestVal = ptr[i]; bestIdx = i }
+        var bestVal = flat[0]
+        for i in 1..<flat.count {
+            if flat[i] > bestVal { bestVal = flat[i]; bestIdx = i }
         }
         return bestIdx
     }
